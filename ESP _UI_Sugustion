@@ -1,0 +1,243 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <DHT.h>
+
+#define DHTPIN 4
+#define DHTTYPE DHT11
+
+#define FAN_RELAY 18
+#define LED_RELAY 19
+
+const char* ssid = "Saffron_Farm";
+const char* password = "12345678";
+
+WebServer server(80);
+DNSServer dnsServer;
+DHT dht(DHTPIN, DHTTYPE);
+
+// ===== STATES =====
+bool fanAuto = true;
+bool fanState = false;
+bool ledState = false;
+
+String farmAdvice = "Press 'Guide Me to Farm' to get farming guidance.";
+
+void applyRelays() {
+  digitalWrite(FAN_RELAY, fanState ? LOW : HIGH);
+  digitalWrite(LED_RELAY, ledState ? LOW : HIGH);
+}
+
+// ===== GUIDE LOGIC (OFFLINE AI-LIKE RULES) =====
+void generateFarmAdvice(int temp, int hum) {
+  farmAdvice = "";
+
+  if (temp < 10) {
+    farmAdvice += "Temperature is very low. Protect saffron corms from frost. ";
+  } else if (temp >= 10 && temp <= 20) {
+    farmAdvice += "Temperature is ideal for saffron growth. ";
+  } else {
+    farmAdvice += "Temperature is high. Avoid irrigation and reduce heat stress. ";
+  }
+
+  if (hum > 70) {
+    farmAdvice += "High humidity detected. Risk of fungal disease—improve ventilation.";
+  } else if (hum < 40) {
+    farmAdvice += "Low humidity. Light irrigation may be required.";
+  } else {
+    farmAdvice += "Humidity is in a safe range.";
+  }
+}
+
+void handleGuide() {
+  float t = dht.readTemperature();
+  float h = dht.readHumidity();
+
+  int temp = isnan(t) ? 0 : (int)t;
+  int hum  = isnan(h) ? 0 : (int)h;
+
+  generateFarmAdvice(temp, hum);
+
+  server.sendHeader("Location", "/", true);
+  server.send(302, "text/plain", "");
+}
+
+void handleRoot() {
+
+  // ---- Handle Controls ----
+  if (server.hasArg("fanMode"))
+    fanAuto = server.arg("fanMode") == "auto";
+
+  if (server.hasArg("fan") && !fanAuto)
+    fanState = server.arg("fan") == "on";
+
+  if (server.hasArg("led"))
+    ledState = server.arg("led") == "on";
+
+  float t = dht.readTemperature();
+  float h = dht.readHumidity();
+
+  int temp = isnan(t) ? 0 : constrain((int)t, 0, 50);
+  int hum  = isnan(h) ? 0 : constrain((int)h, 0, 100);
+
+  if (fanAuto) fanState = temp > 18;
+
+  applyRelays();
+
+  String page = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="3">
+<title>Saffron Farming Dashboard</title>
+
+<style>
+body{margin:0;background:#0b1220;color:#e5e7eb;font-family:Arial;}
+h2{text-align:center;margin:16px 0;}
+.dashboard{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;padding:16px;}
+.card{background:#111827;border-radius:14px;padding:20px;box-shadow:0 10px 25px rgba(0,0,0,.3);}
+.center{text-align:center;}
+.gauge{width:180px;height:180px;margin:auto;border-radius:50%;display:flex;align-items:center;justify-content:center;}
+.inner{width:130px;height:130px;background:#0b1220;border-radius:50%;display:flex;flex-direction:column;justify-content:center;}
+.value{font-size:26px;font-weight:bold;}
+.label{font-size:14px;color:#9ca3af;}
+.row{display:flex;justify-content:space-between;align-items:center;margin-top:12px;}
+.switch{position:relative;width:52px;height:26px;}
+.switch input{display:none;}
+.slider{position:absolute;inset:0;background:#374151;border-radius:26px;}
+.slider:before{content:"";position:absolute;width:20px;height:20px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.3s;}
+input:checked+.slider{background:#22c55e;}
+input:checked+.slider:before{transform:translateX(26px);}
+.on{color:#22c55e;}
+.off{color:#ef4444;}
+button{width:100%;padding:14px;border:none;border-radius:10px;background:#22c55e;font-size:16px;font-weight:bold;cursor:pointer;}
+.small{font-size:14px;color:#9ca3af;margin-top:10px;}
+</style>
+</head>
+
+<body>
+<h2>Saffron Farming Dashboard</h2>
+
+<div class="dashboard">
+
+<div class="card center">
+<div class="gauge" style="background:conic-gradient(#ef4444 TEMP%, #1f2933 0);">
+  <div class="inner">
+    <div class="value">TEMP°C</div>
+    <div class="label">Temperature</div>
+  </div>
+</div>
+</div>
+
+<div class="card center">
+<div class="gauge" style="background:conic-gradient(#38bdf8 HUM%, #1f2933 0);">
+  <div class="inner">
+    <div class="value">HUM%</div>
+    <div class="label">Humidity</div>
+  </div>
+</div>
+</div>
+
+<div class="card">
+<div class="row">
+<b>Fan Mode</b>
+<form>
+<input type="hidden" name="fanMode" value="MODE_VAL">
+<label class="switch">
+<input type="checkbox" onchange="this.form.submit()" MODE_CHECK>
+<span class="slider"></span>
+</label>
+</form>
+</div>
+<p>Status: <span class="FAN_CLASS">FAN_STATE</span></p>
+
+<div class="row">
+<b>Fan (Manual)</b>
+<form>
+<input type="hidden" name="fan" value="FAN_VAL">
+<label class="switch">
+<input type="checkbox" onchange="this.form.submit()" FAN_CHECK>
+<span class="slider"></span>
+</label>
+</form>
+</div>
+</div>
+
+<div class="card">
+<div class="row">
+<b>LED</b>
+<form>
+<input type="hidden" name="led" value="LED_VAL">
+<label class="switch">
+<input type="checkbox" onchange="this.form.submit()" LED_CHECK>
+<span class="slider"></span>
+</label>
+</form>
+</div>
+<p>Status: <span class="LED_CLASS">LED_STATE</span></p>
+</div>
+
+<div class="card">
+<h3>🌱 Farming Guidance</h3>
+<form action="/guide">
+<button>Guide Me to Farm</button>
+</form>
+<p class="small">ADVICE_TEXT</p>
+</div>
+
+</div>
+</body>
+</html>
+)rawliteral";
+
+  page.replace("TEMP", String(temp));
+  page.replace("HUM", String(hum));
+
+  page.replace("MODE_VAL", fanAuto ? "manual" : "auto");
+  page.replace("MODE_CHECK", fanAuto ? "checked" : "");
+
+  page.replace("FAN_VAL", fanState ? "off" : "on");
+  page.replace("FAN_CHECK", fanState ? "checked" : "");
+  page.replace("FAN_STATE", fanState ? "ON" : "OFF");
+  page.replace("FAN_CLASS", fanState ? "on" : "off");
+
+  page.replace("LED_VAL", ledState ? "off" : "on");
+  page.replace("LED_CHECK", ledState ? "checked" : "");
+  page.replace("LED_STATE", ledState ? "ON" : "OFF");
+  page.replace("LED_CLASS", ledState ? "on" : "off");
+
+  page.replace("ADVICE_TEXT", farmAdvice);
+
+  server.send(200, "text/html", page);
+}
+
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+
+  pinMode(FAN_RELAY, OUTPUT);
+  pinMode(LED_RELAY, OUTPUT);
+
+  digitalWrite(FAN_RELAY, HIGH);
+  digitalWrite(LED_RELAY, HIGH);
+
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(ssid, password);
+
+  dnsServer.start(53, "*", WiFi.softAPIP());
+
+  server.on("/", handleRoot);
+  server.on("/guide", handleGuide);
+  server.onNotFound([](){
+    server.sendHeader("Location", "/", true);
+    server.send(302, "text/plain", "");
+  });
+
+  server.begin();
+}
+
+void loop() {
+  dnsServer.processNextRequest();
+  server.handleClient();
+}
