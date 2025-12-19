@@ -1,0 +1,70 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <DHT.h>
+
+#define DHTPIN 4
+#define DHTTYPE DHT11
+
+// WiFi AP credentials
+const char* ssid = "ESP32_DHT11";
+const char* password = "12345678";
+
+WebServer server(80);
+DNSServer dnsServer;
+DHT dht(DHTPIN, DHTTYPE);
+
+const byte DNS_PORT = 53;
+
+void handleRoot() {
+  float temp = dht.readTemperature();
+  float hum  = dht.readHumidity();
+
+  String page = "<!DOCTYPE html><html><head>";
+  page += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
+  page += "<meta http-equiv='refresh' content='3'>";
+  page += "<title>ESP32 Monitor</title></head><body>";
+  page += "<h2>ESP32 DHT11 Monitor</h2>";
+
+  if (isnan(temp) || isnan(hum)) {
+    page += "<p>Sensor Error</p>";
+  } else {
+    page += "<p><b>Temperature:</b> " + String(temp) + " °C</p>";
+    page += "<p><b>Humidity:</b> " + String(hum) + " %</p>";
+  }
+
+  page += "</body></html>";
+
+  server.send(200, "text/html", page);
+}
+
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(ssid, password);
+
+  Serial.println("Captive Portal Started");
+  Serial.print("AP IP: ");
+  Serial.println(WiFi.softAPIP());
+
+  // Start DNS (redirect all domains to ESP32)
+  dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
+
+  server.on("/", handleRoot);
+
+  // Redirect all unknown paths to root
+  server.onNotFound([]() {
+    server.sendHeader("Location", "/", true);
+    server.send(302, "text/plain", "");
+  });
+
+  server.begin();
+}
+
+void loop() {
+  dnsServer.processNextRequest();
+  server.handleClient();
+}
+
